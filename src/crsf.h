@@ -80,11 +80,22 @@ typedef struct
     int8_t  downlink_snr;              // Downlink SNR ( dB )
 }__attribute__((packed)) CRSF_PacketLinkStatistics;
 
+typedef struct
+{
+    char display_name[16];
+    char serial_number[4];
+    uint8_t hardware_version[4];
+    uint8_t software_version[4];
+    uint8_t nbr_of_config_params;
+    uint8_t protocol_version;
+} CRSF_PacketDeviceInfo;
+
 
 typedef union
 {
     CRSF_PacketChannelData channel_data;
     CRSF_PacketLinkStatistics statistics;
+    CRSF_PacketDeviceInfo device_info;
 } CRSF_Packet;
 
 
@@ -112,6 +123,7 @@ class CRSF
 
         CRSF_PacketChannelData get_channel_data();
         CRSF_PacketLinkStatistics get_link_statistics();
+        CRSF_PacketDeviceInfo get_device_info();
 
     private:
         // -- Typedefs -- //

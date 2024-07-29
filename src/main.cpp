@@ -61,14 +61,19 @@ static CRSF crsf;
 static uint8_t crsf_tx_buf[CRSF_MAX_PACKET_SIZE];
 static CRSF_PacketChannelData channel_data;
 static CRSF_PacketLinkStatistics link_statistics;
+static CRSF_PacketDeviceInfo device_info;
+static bool received_device_info = false;
 static int crsf_read = 0;
-static int crsf_received_packets = 0;
 static int crsf_written = 0;
+static int crsf_rx_pkts = 0;
+static int crsf_tx_pkts = 0;
 
 // Helper functions
 static uint16_t switch_value_to_channel(const int raw_value);
 static void draw_display();
 static void print_info();
+static void print_buf(const uint8_t* buf, int size);
+static void print_device_info();
 
 
 void setup()
@@ -128,7 +133,7 @@ void setup()
     channel_data.channels[4] = 1000; // Arm throttle
 }
 
-static uint32_t last_ping = millis();
+static uint32_t last_ping = 0;
 
 void loop()
 {
@@ -163,41 +168,42 @@ void loop()
     // Read CRSF data
     crsf_frame_type_t frame_type;
 
-    if (SerialCRSF.available())
+    while (SerialCRSF.available())
     {
-        while (SerialCRSF.available())
+        uint8_t byte = SerialCRSF.read();
+        crsf_read++;
+        if (crsf.parse_byte(byte, &frame_type))
         {
-            uint8_t byte = SerialCRSF.read();
-            if (crsf.parse_byte(byte, &frame_type))
+            Serial.printf("! CRSF: %02x\n", frame_type);
+            crsf_rx_pkts++;
+            switch (frame_type)
             {
-                Serial.printf("CRSF PKT: %02x\n", frame_type);
-                crsf_received_packets++;
-                switch (frame_type)
-                {
-                    case CRSF_FRAMETYPE_LINK_STATISTICS:
-                        link_statistics = crsf.get_link_statistics();
-                        break;
-                    case CRSF_FRAMETYPE_RADIO_ID:
-                        break;
-                    case CRSF_FRAMETYPE_FLIGHT_MODE:
-                        break;
-                    case CRSF_FRAMETYPE_BATTERY_SENSOR:
-                        break;
-                    case CRSF_FRAMETYPE_GPS:
-                        break;
-                }
+                case CRSF_FRAMETYPE_LINK_STATISTICS:
+                    link_statistics = crsf.get_link_statistics();
+                    break;
+                case CRSF_FRAMETYPE_DEVICE_INFO:
+                    received_device_info = true;
+                    device_info = crsf.get_device_info();
+                    print_device_info();
+                    break;
+                case CRSF_FRAMETYPE_RADIO_ID:
+                    break;
+                case CRSF_FRAMETYPE_FLIGHT_MODE:
+                    break;
+                case CRSF_FRAMETYPE_BATTERY_SENSOR:
+                    break;
+                case CRSF_FRAMETYPE_GPS:
+                    break;
             }
-            crsf_read++;
         }
     }
 
-
     // Decide what CRSF packet to send
     int crsf_pkt_size = 0;
-    if ((millis() - last_ping) > 1000)
+    if (!received_device_info)
     {
+        Serial.println("Requesting device info");
         crsf_pkt_size = crsf.pack_device_ping(crsf_tx_buf);
-        last_ping = millis();
     }
     else
     {
@@ -206,7 +212,8 @@ void loop()
 
     // First we'll send a CRSF packet
     SerialCRSF.setPins(PIN_CRSF_DUMMY, PIN_CRSF_HALF_DUPLEX);
-    crsf_written = SerialCRSF.write(crsf_tx_buf, crsf_pkt_size);
+    crsf_written += SerialCRSF.write(crsf_tx_buf, crsf_pkt_size);
+    crsf_tx_pkts++;
     SerialCRSF.flush(); // Flush to ensure all data in TX buffers is sent
 
     // After we've sent the packet, we'll swap to RX and start reading input data from transmitter
@@ -216,12 +223,35 @@ void loop()
     draw_display();
 
     // Print debug info
-    print_info();
+    static uint32_t last_print = 0;
+    if ((millis() - last_print) > 1000)
+    {
+        print_info();
+        print_device_info();
+        last_print = millis();
+    }
 
     last_loop = millis();
 }
 
+static void print_buf(const uint8_t* buf, int size)
+{
+    for (int i = 0; i < size; i++)
+    {
+        Serial.printf("%02x ", buf[i]);
+    }
+    Serial.print("\n");
+}
 
+static void print_device_info()
+{
+    Serial.printf("Discovered CRSF Device:");
+    Serial.printf("Name: %s\n", device_info.display_name);
+    Serial.printf("HW version: %d.%d.%d\n", device_info.hardware_version[1], device_info.hardware_version[2], device_info.hardware_version[3]);
+    Serial.printf("SW version: %d.%d.%d\n", device_info.software_version[1], device_info.software_version[2], device_info.software_version[3]);
+    Serial.printf("Available params: %d\n", device_info.nbr_of_config_params);
+    Serial.printf("Protocol version: %d\n", device_info.protocol_version);
+}
 
 static uint16_t switch_value_to_channel(const int raw_value)
 {
@@ -252,14 +282,14 @@ static void draw_display()
 
 static void print_info()
 {
-    Serial.printf("AccX: %.2f, AccY: %.2f, AccY: %.2f\n", acc.acceleration.x, acc.acceleration.y, acc.acceleration.z);
-    Serial.printf("GyroX: %.2f, GyroY: %.2f, GyroY: %.2f\n", gyro.gyro.x, gyro.gyro.y, gyro.gyro.z);
-    Serial.printf("vRaw: %d, vbat: %.2f\n", vbat_raw, vbat);
-    Serial.printf("SW A: %d, SW B: %d, JH: %d, JV: %d, JB: %d\n", sw_a, sw_b, joystick_hori, joystick_vert, joystick_btn);
-    Serial.print("Channels: ");
+    Serial.printf("[ACC] X: %.2f, Y: %.2f, Y: %.2f\n", acc.acceleration.x, acc.acceleration.y, acc.acceleration.z);
+    Serial.printf("[GYRO] X: %.2f, Y: %.2f, Y: %.2f\n", gyro.gyro.x, gyro.gyro.y, gyro.gyro.z);
+    Serial.printf("[BATT] raw: %d, vbat: %.2f\n", vbat_raw, vbat);
+    Serial.printf("[INPUT] SW A: %d, SW B: %d, JH: %d, JV: %d, JB: %d\n", sw_a, sw_b, joystick_hori, joystick_vert, joystick_btn);
+    Serial.print("[CHANNELS] ");
     for (int i = 0; i < 16; i++) Serial.printf("%u ", channel_data.channels[i]);
     Serial.print("\n");
-    Serial.printf("Read: %d, pkts: %d, written: %d\n", crsf_read, crsf_received_packets, crsf_written);
-    Serial.printf("RSSI: %d, LQ: %d\n", link_statistics.uplink_rssi_ant1, link_statistics.downlink_link_quality);
+    Serial.printf("[CRSF] Read: %d, RX: %d, TX: %d, written: %d\n", crsf_read, crsf_rx_pkts, crsf_tx_pkts, crsf_written);
+    Serial.printf("[ELRS] RSSI: %d, LQ: %d\n", link_statistics.uplink_rssi_ant1, link_statistics.downlink_link_quality);
     Serial.print("\n");
 }

@@ -3,6 +3,18 @@
 #include <string.h>
 #include <Arduino.h>
 
+
+// Helpful for debugging
+static void print_buf(const uint8_t* buf, int size)
+{
+    for (int i = 0; i < size; i++)
+    {
+        Serial.printf("%02x ", buf[i]);
+    }
+    Serial.print("\n");
+}
+
+
 CRSF::CRSF()
 {
 
@@ -11,13 +23,14 @@ CRSF::CRSF()
 int CRSF::pack_device_ping(uint8_t* buf)
 {
     // HOST: C8 04 28 00 EA 54
-    buf[0] = CRSF_ADDRESS_RADIO_TRANSMITTER;
-    buf[1] = 0x04;
-    buf[2] = 0x28;
+    int payload_size = 2;
+    buf[0] = CRSF_ADDRESS_CRSF_TRANSMITTER;
+    buf[1] = 4;
+    buf[2] = CRSF_FRAMETYPE_DEVICE_PING;
     buf[3] = 0x00;
     buf[4] = 0xEA;
-    buf[5] = 0x54;
-    return 6;
+    buf[5] = calculate_crc(&buf[2], payload_size + 1);
+    return CRSF_HEADER_SIZE + payload_size;
 }
 
 int CRSF::pack_channel_data(const CRSF_PacketChannelData& channel_data, uint8_t* buf)
@@ -50,7 +63,7 @@ int CRSF::pack_channel_data(const CRSF_PacketChannelData& channel_data, uint8_t*
     uint8_t crc = calculate_crc(&buf[2], payload_size+1);
     buf[3 + payload_size] = crc; // CRC
 
-    return 4 + payload_size;
+    return CRSF_HEADER_SIZE + payload_size;
 }
 
 bool CRSF::parse_byte(const uint8_t byte, crsf_frame_type_t* frame_type)
@@ -147,6 +160,9 @@ crsf_frame_type_t CRSF::handle_new_packet()
 
     crsf_channels_t* channels;
     CRSF_PacketLinkStatistics* statistics;
+    CRSF_PacketDeviceInfo* device_info;
+    char* device_name;
+    int name_offset;
 
     switch (frame_type)
     {
@@ -179,27 +195,36 @@ crsf_frame_type_t CRSF::handle_new_packet()
             _last_pkt.statistics.uplink_rssi_ant1 = statistics->uplink_rssi_ant1;
             _last_pkt.statistics.uplink_link_quality = statistics->uplink_link_quality;
             break;
+        case CRSF_FRAMETYPE_DEVICE_INFO:
+            _last_pkt.device_info = CRSF_PacketDeviceInfo{};
+
+            // First two bytes of payload is [EA, EE] = extended packet dest/src (handset/txmodule)
+            device_name = (char*) &_curr_pkt.payload[2];
+
+            // First field is display name (string) null-terminated. Not fixed length... So we have to check its length
+            name_offset = strnlen(device_name, 16);
+            strncpy(_last_pkt.device_info.display_name, device_name, name_offset);
+
+            // Rest of fields thus requires some byte offsets to be parsed correctly :)
+            memcpy(_last_pkt.device_info.serial_number,    &_curr_pkt.payload[2+name_offset + 1], 4);
+            memcpy(_last_pkt.device_info.hardware_version, &_curr_pkt.payload[2+name_offset + 1 + 4], 4);
+            memcpy(_last_pkt.device_info.software_version, &_curr_pkt.payload[2+name_offset + 1 + 8], 4);
+            _last_pkt.device_info.nbr_of_config_params    = _curr_pkt.payload[2+name_offset + 1 + 12];
+            _last_pkt.device_info.protocol_version        = _curr_pkt.payload[2+name_offset + 1 + 13];
+            break;
         default:
             // TOOD
             //printf("UNKNOWN CRSF FRAME TYPE 0x%02x\n", packet->frame_type);
             _parse_errors++;
             break;
     }
-    /*
-    Serial.printf("Type: %d, Len: %d -> ", frame_type, _frame_bytes_received);
-    for (int i = 0; i < _frame_bytes_received; i++)
-    {
-        Serial.printf("%02x ", _buf[i]);
-    }
-    Serial.print("\n");
-    for (int i = 0; i < 16; i++)
-    {
-        Serial.printf("%d ", _last_pkt.channel_data.channels[i]);
-    }
-    Serial.print("\n");
-    */
 
     return frame_type;
+}
+
+CRSF_PacketDeviceInfo CRSF::get_device_info()
+{
+    return _last_pkt.device_info;
 }
 
 CRSF_PacketChannelData CRSF::get_channel_data()
